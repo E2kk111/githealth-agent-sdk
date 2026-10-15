@@ -1,0 +1,26 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { defineAgent, attachEvidence, CaseSchema, PolicySchema } from "../contracts.js";
+import { evaluatePolicy, requireHumanApproval } from "../governance.js";
+import { runSimulation } from "../simlab.js";
+import { evaluate_market_scenario, evaluate_payment_integrity_case, simulate_episode, TOOL_NAMES } from "../tools.js";
+
+const episode = CaseSchema.parse({ id: "case-1", kind: "episode", synthetic: true, facts: {}, evidence: [] });
+const policy = PolicySchema.parse({ id: "aion.episode", version: "v0.1", requiredEvidence: ["clinical-note"], consequential: true, authorizedRoles: ["licensed-clinician"] });
+const evidence = { id: "clinical-note", source: "fixture", capturedAt: "2026-01-01T00:00:00.000Z", synthetic: true as const, summary: "Synthetic note", permissions: [] };
+test("1: typed agent runs", async () => assert.equal(await defineAgent({ name: "test", run: async (x: number) => x + 1 }).run(1), 2));
+test("2: blank agent names rejected", () => assert.throws(() => defineAgent({ name: "", run: async () => 1 })));
+test("3: real cases rejected", () => assert.throws(() => CaseSchema.parse({ ...episode, synthetic: false })));
+test("4: evidence attaches", () => assert.equal(attachEvidence(episode, evidence).evidence.length, 1));
+test("5: missing evidence blocks", () => assert.equal(evaluatePolicy(episode, policy).state, "blocked"));
+test("6: evidence requires review", () => assert.equal(evaluatePolicy(attachEvidence(episode, evidence), policy).state, "awaiting-human"));
+test("7: unauthorized reviewer denied", () => assert.throws(() => requireHumanApproval(evaluatePolicy(attachEvidence(episode, evidence), policy), policy, { id: "a", role: "assistant" }, "2026-01-01T00:00:00.000Z")));
+test("8: authorized reviewer approves simulation only", () => assert.equal(requireHumanApproval(evaluatePolicy(attachEvidence(episode, evidence), policy), policy, { id: "a", role: "licensed-clinician" }, "2026-01-01T00:00:00.000Z").state, "approved-for-simulation"));
+test("9: policy version mismatch denied", () => assert.throws(() => requireHumanApproval(evaluatePolicy(attachEvidence(episode, evidence), policy), { ...policy, version: "v2" }, { id: "a", role: "licensed-clinician" }, "2026-01-01T00:00:00.000Z")));
+test("10: simulation never executes clinical actions", () => assert.equal(runSimulation({ scenario: episode, policy }).checks.autonomousClinicalExecution, false));
+test("11: market tool arithmetic", () => assert.equal(evaluate_market_scenario({ scenarioId: "s", synthetic: true, sites: 2, monthlyFee: 100, annualOperatingCost: 1000 }).illustrativeMargin, 1400));
+test("12: payment tool flags insufficient evidence", () => assert.equal(evaluate_payment_integrity_case({ caseId: "c", synthetic: true, claimedAmount: 10, documentedAmount: 0, evidenceComplete: false }).state, "insufficient-evidence"));
+test("13: payment tool detects synthetic variance", () => assert.equal(evaluate_payment_integrity_case({ caseId: "c", synthetic: true, claimedAmount: 10, documentedAmount: 5, evidenceComplete: true }).difference, 5));
+test("14: synthetic episode tool returns blocked state", () => assert.equal(simulate_episode({ scenario: episode, policy }).decision.state, "blocked"));
+test("15: MCP tool catalog includes three tools", () => assert.equal(TOOL_NAMES.length, 3));
+test("16: duplicate evidence IDs fail closed", () => assert.equal(evaluatePolicy({ ...episode, evidence: [evidence, evidence] }, policy).state, "blocked"));
